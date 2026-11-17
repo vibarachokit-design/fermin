@@ -38,7 +38,7 @@ const SRC = {
   surf2: 'bg/19_bg_mejillones_water_surface.webp', under2: 'bg/20_bg_mejillones_underwater.webp',
   sky3: 'bg/21_bg_pampa_warm_sky.webp', hor3: 'bg/22_bg_pampa_far_horizon.webp',
   ground3: 'bg/23_bg_pampa_middle_ground.webp', night3: 'bg/24_bg_pampa_night_light_pollution.webp',
-  cover: 'screens/title_cover.webp', logo: 'ui/logo.png', win: 'screens/26_screen_victory.webp', lose: 'screens/27_screen_game_over.webp',
+  cover: 'screens/title_cover.webp', logo: 'ui/logo.png', firma: 'ui/firma.png', win: 'screens/26_screen_victory.webp', lose: 'screens/27_screen_game_over.webp',
   flight: 'sprites/tern_flight.png', dive: 'sprites/tern_dive.png', states: 'sprites/tern_states.png',
   air: 'sprites/air.png', desert: 'sprites/desert.png', fish: 'sprites/fish.png', icons: 'sprites/icons.png',
 };
@@ -517,6 +517,7 @@ function Title() {
     update(dt) {
       t += dt;
       if (handleButtons()) return;
+      if (installHelp) { if (pressed.Escape || pressed.Space || pressed.Enter) installHelp = false; return; }
       if (pressed.Space || pressed.Enter) start();
     },
     draw() {
@@ -537,6 +538,17 @@ function Title() {
       if (muted) { roundRect(1130, 19, 54, 48, 12, '#0b3a6b'); drawSprite('icons', ICON.mute, 1157, 43, 0.36); }
       nextButtons.push({ x: 1126, y: 15, w: 62, h: 56, cb: toggleMute });
       nextButtons.push({ x: 1200, y: 15, w: 62, h: 56, cb: toggleFullscreen });
+      // Logo de la firma (esquina inferior derecha).
+      drawFirma(W - 222, H - 128, 204, 112);
+      // Descargar / instalar en el dispositivo.
+      if (!isInstalled()) {
+        const bx = 20, by = 18, bw = 250, bh = 56;
+        roundRect(bx, by + 5, bw, bh, bh / 2, 'rgba(0,0,0,.25)');
+        roundRect(bx, by, bw, bh, bh / 2, hit({ x: bx, y: by, w: bw, h: bh }, ptr.x, ptr.y) ? '#ffb08f' : C.coral, C.white, 4);
+        text('📲  Descargar juego', bx + bw / 2, by + bh / 2 + 2, 24, C.white, { stroke: 'rgba(80,30,10,.35)', strokeW: 4 });
+        nextButtons.push({ x: bx, y: by, w: bw, h: bh, cb: installApp });
+      }
+      if (installHelp) { nextButtons = []; drawInstallHelp(); }
       text('Espacio / Enter para comenzar', W / 2, H - 22, 18, C.white, { weight: 700, stroke: 'rgba(0,0,0,.55)', strokeW: 5, alpha: 0.8 });
     },
   };
@@ -1046,6 +1058,60 @@ function saveBest() {
   if (game.score > game.best) { game.best = game.score; try { localStorage.setItem('gaviotin_best', String(game.best)); } catch (_) { /* nada */ } return true; }
   return false;
 }
+// Firma del estudio y créditos.
+function drawFirma(x, y, w, h) {
+  roundRect(x, y, w, h, 18, 'rgba(255,250,240,.88)', 'rgba(104,117,94,.55)', 2);
+  const img = IMG.firma, sc = Math.min((w - 20) / img.width, (h - 14) / img.height);
+  ctx.drawImage(img, x + (w - img.width * sc) / 2, y + (h - img.height * sc) / 2, img.width * sc, img.height * sc);
+}
+function drawCredits() {
+  const h = 126, y = H - h;
+  ctx.fillStyle = 'rgba(255,250,240,.9)';
+  ctx.fillRect(0, y, W, h);
+  ctx.fillStyle = 'rgba(104,117,94,.5)'; ctx.fillRect(0, y, W, 3);
+  const img = IMG.firma, lh = 100, lw = img.width * lh / img.height;
+  const textW = 640, total = lw + 30 + textW, x0 = (W - total) / 2;
+  ctx.drawImage(img, x0, y + (h - lh) / 2 + 2, lw, lh);
+  const tx = x0 + lw + 30;
+  text('Mejillones, Turismo, Cultura, Creatividad', tx, y + 42, 27, '#55634c', { align: 'left', weight: 800 });
+  text('desde Kihnally Chile.', tx, y + 74, 27, '#55634c', { align: 'left', weight: 800 });
+  text('Derechos reservados', tx, y + 104, 19, '#7a8770', { align: 'left', weight: 700 });
+}
+
+// ---------------------------------------------------- instalar (PWA)
+let installPrompt = null, installHelp = false;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });
+addEventListener('appinstalled', () => { installPrompt = null; installHelp = false; });
+function isInstalled() {
+  return matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true;
+}
+function installApp() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(() => { installPrompt = null; });
+  } else installHelp = true;
+}
+function drawInstallHelp() {
+  ctx.fillStyle = 'rgba(8,24,36,.7)'; ctx.fillRect(0, 0, W, H);
+  const w = 840, h = 560, x = (W - w) / 2, y = (H - h) / 2;
+  roundRect(x, y, w, h, 32, C.cream, C.sand, 6);
+  text('Instala el juego en tu dispositivo', W / 2, y + 58, 38, C.deep);
+  const lines = [
+    ['Android (Chrome)', 'Toca el menú ⋮ y elige «Instalar aplicación» o «Agregar a la pantalla principal».'],
+    ['iPhone / iPad (Safari)', 'Toca el botón Compartir y luego «Agregar a inicio».'],
+    ['Computador (Chrome / Edge)', 'Haz clic en el ícono de instalar en la barra de direcciones.'],
+  ];
+  let yy = y + 118;
+  for (const [title, body] of lines) {
+    text(title, x + 60, yy, 25, C.ochre, { align: 'left' });
+    const bl = wrap(body, w - 120, 22, 600);
+    bl.forEach((l, i) => text(l, x + 60, yy + 32 + i * 28, 22, C.ink, { align: 'left', weight: 600 }));
+    yy += 58 + bl.length * 28;
+  }
+  text('El juego queda con su ícono y se puede jugar sin internet.', W / 2, y + h - 112, 21, C.deep, { weight: 700 });
+  button('Entendido', W / 2 - 120, y + h - 84, 240, 56, () => { installHelp = false; }, { size: 26 });
+}
+
 function Victory() {
   let t = 0, record = false;
   return {
@@ -1059,8 +1125,9 @@ function Victory() {
       text(`Puntaje: ${game.score}`, W / 2, 262, 48, '#ffd34d', { stroke: C.deep, strokeW: 10 });
       if (record) text('¡Nuevo récord!', W / 2, 314, 28, C.white, { stroke: C.coral, strokeW: 7 });
       button('Jugar de nuevo', W / 2 - 170, 360, 340, 78, () => setScene(Title()), { size: 32 });
-      text('Conoce más y súmate a su cuidado en gaviotinchico.cl', W / 2, H - 34, 22, C.white, { weight: 700, stroke: 'rgba(0,0,0,.6)', strokeW: 6 });
+      text('Conoce más y súmate a su cuidado en gaviotinchico.cl', W / 2, 472, 22, C.white, { weight: 700, stroke: 'rgba(0,0,0,.6)', strokeW: 6 });
       drawParticles();
+      drawCredits();
     },
   };
 }
