@@ -1,5 +1,5 @@
 /* Service worker de El Vuelo del Gaviotín (generado por tools/build_pwa.py; no editar a mano). */
-const VERSION = 'cbcbbe18c1cf';
+const VERSION = '0c1f285dd06d';
 const CACHE = 'gaviotin-' + VERSION;
 const CORE = [
 "./",

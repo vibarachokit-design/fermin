@@ -43,7 +43,7 @@ const SRC = {
   air: 'sprites/air.png', desert: 'sprites/desert.png', fish: 'sprites/fish.png', icons: 'sprites/icons.png',
 };
 for (const n of ['tool_sign', 'tool_fence', 'tool_cone', 'tool_lamp', 'tool_detour', 'trash_bottle', 'trash_bag',
-  'trash_line', 'trash_rings', 'trash_cap', 'sea_pelican', 'sea_lion', 'sea_net', 'sea_boat', 'nest_eggs',
+  'trash_line', 'trash_rings', 'trash_cap', 'sea_pelican', 'sea_lion', 'sea_net', 'nest_eggs',
   'chick_beg', 'chick_eat', 'pair_nest', 'fact_card']) SRC[n] = `items/${n}.png`;
 
 const SHEETS = {
@@ -61,15 +61,21 @@ let loaded = 0;
 const total = Object.keys(SRC).length;
 
 function loadAll() {
+  // Cada imagen tiene tiempo límite y reintentos, para que una descarga trabada no detenga el juego.
   const one = (k, src, tries) => new Promise((res, rej) => {
     const im = new Image();
-    im.onload = () => { IMG[k] = im; loaded++; res(); };
-    im.onerror = () => (tries > 1
-      ? setTimeout(() => one(k, src, tries - 1).then(res, rej), 400)
-      : rej(new Error('No se pudo cargar ' + src)));
-    im.src = 'assets/' + src + (tries < 3 ? `?r=${tries}` : '');
+    let done = false;
+    const fail = () => {
+      if (done) return; done = true; im.src = '';
+      if (tries > 1) setTimeout(() => one(k, src, tries - 1).then(res, rej), 400);
+      else rej(new Error('No se pudo cargar ' + src));
+    };
+    const timer = setTimeout(fail, 12000);
+    im.onload = () => { if (done) return; done = true; clearTimeout(timer); IMG[k] = im; loaded++; res(); };
+    im.onerror = () => { clearTimeout(timer); fail(); };
+    im.src = 'assets/' + src + (tries < 4 ? `?r=${tries}` : '');
   });
-  return one('logo', SRC.logo, 3).then(() => Promise.all(Object.entries(SRC).filter(([k]) => k !== 'logo').map(([k, src]) => one(k, src, 3))));
+  return one('logo', SRC.logo, 4).then(() => Promise.all(Object.entries(SRC).filter(([k]) => k !== 'logo').map(([k, src]) => one(k, src, 4))));
 }
 
 // Caja de contenido real (alfa) de cada cuadro, para anclar y colisionar con precisión.
@@ -202,6 +208,11 @@ cv.addEventListener('pointerdown', (e) => {
   ptrPos(e); ptr.down = true; ptr.tap = true; ptr.downT = 0;
   try { cv.setPointerCapture(e.pointerId); } catch (_) { /* sin captura */ }
   unlockAudio();
+  if (installPrompt && scene && scene.isTitle) {
+    const onBtn = !installHelp && !isInstalled() && hit(INSTALL_BTN, ptr.x, ptr.y);
+    const onHelp = installHelp && hit(HELP_BTN, ptr.x, ptr.y);
+    if (onBtn || onHelp) { triggerInstall(); ptr.tap = false; ptr.down = false; }
+  }
 });
 cv.addEventListener('pointermove', (e) => ptrPos(e));
 const ptrUp = () => { ptr.down = false; };
@@ -249,7 +260,7 @@ function unlockAudio() {
       actx = new (window.AudioContext || window.webkitAudioContext)();
       master = actx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(actx.destination);
     } catch (_) { actx = null; }
-    if (actx) loadAudioBuffers();
+    if (actx) { loadAudioBuffers(); music.hookAll(); }
   }
   if (actx && actx.state === 'suspended') actx.resume();
   music.resume();
@@ -345,34 +356,59 @@ const loops = {
 };
 
 // Música con transición cruzada.
-const MUSIC_VOL = 0.5;
+const MUSIC_VOL = 0.5, FADE_IN = 0.9, FADE_OUT = 0.6;
+// Una sola pista a la vez: la anterior se apaga con un fundido corto y se detiene sí o sí.
+// El volumen va por WebAudio (GainNode) porque en móviles `audio.volume` puede ignorarse.
 const music = {
   els: {}, current: null,
   el(name) {
-    if (!this.els[name]) { const a = new Audio(`assets/audio/${name}.mp3`); a.preload = 'auto'; this.els[name] = a; }
+    if (!this.els[name]) {
+      const a = new Audio(`assets/audio/${name}.mp3`);
+      a.preload = 'auto'; a._lvl = 0; a._stopAt = 0;
+      this.els[name] = a; this.hook(a);
+    }
     return this.els[name];
+  },
+  hook(a) {
+    if (a._g || !actx) return;
+    try {
+      const src = actx.createMediaElementSource(a), g = actx.createGain();
+      g.gain.value = 0; src.connect(g).connect(master); a._g = g; a.volume = 1;
+    } catch (_) { /* sin WebAudio: se usa audio.volume */ }
+  },
+  hookAll() { for (const a of Object.values(this.els)) this.hook(a); },
+  setLevel(a, lvl) {
+    a._lvl = lvl;
+    if (a._g) a._g.gain.value = lvl * MUSIC_VOL; else a.volume = clamp(lvl * MUSIC_VOL, 0, 1);
   },
   play(name, loop = true) {
     if (this.current === name) return;
+    const now = performance.now();
+    for (const [n, a] of Object.entries(this.els)) if (n !== name && !a.paused) a._stopAt = a._stopAt || now + FADE_OUT * 1000;
     this.current = name;
     if (!name) return;
     const a = this.el(name);
-    a.loop = loop;
+    a._stopAt = 0; a.loop = loop;
     try { a.currentTime = 0; } catch (_) { /* aún sin cargar */ }
-    a.volume = 0;
-    if (!muted) a.play().catch(() => { /* espera interacción */ });
+    this.setLevel(a, 0);
+    if (!muted && !document.hidden) a.play().catch(() => { /* espera interacción */ });
   },
   pauseAll() { for (const a of Object.values(this.els)) a.pause(); },
   resume() {
-    if (muted || !this.current) return;
+    if (muted || !this.current || document.hidden) return;
     const a = this.el(this.current);
     if (a.paused && !a.ended) a.play().catch(() => { /* espera interacción */ });
   },
   update(dt) {
+    const now = performance.now();
     for (const [n, a] of Object.entries(this.els)) {
-      const target = n === this.current ? (paused ? MUSIC_VOL * 0.35 : MUSIC_VOL) : 0;
-      a.volume = clamp(a.volume + clamp(target - a.volume, -dt * 0.7, dt * 0.7), 0, 1);
-      if (n !== this.current && a.volume === 0 && !a.paused) a.pause();
+      if (n === this.current) {
+        const target = paused ? 0.35 : 1;
+        this.setLevel(a, clamp(a._lvl + clamp(target - a._lvl, -dt / FADE_OUT, dt / FADE_IN), 0, 1));
+      } else {
+        if (!a.paused) this.setLevel(a, Math.max(0, a._lvl - dt / FADE_OUT));
+        if (!a.paused && (a._lvl <= 0 || (a._stopAt && now >= a._stopAt))) { a.pause(); this.setLevel(a, 0); a._stopAt = 0; }
+      }
     }
   },
 };
@@ -513,6 +549,7 @@ function Title() {
   let t = 0;
   const PLAY = { x: 452, y: 440, w: 386, h: 105 };
   return {
+    isTitle: true,
     enter() { game.score = 0; game.lives = 3; music.play('music_title'); },
     update(dt) {
       t += dt;
@@ -542,12 +579,13 @@ function Title() {
       drawFirma(W - 222, H - 128, 204, 112);
       // Descargar / instalar en el dispositivo.
       if (!isInstalled()) {
-        const bx = 20, by = 18, bw = 250, bh = 56;
+        const { x: bx, y: by, w: bw, h: bh } = INSTALL_BTN;
         roundRect(bx, by + 5, bw, bh, bh / 2, 'rgba(0,0,0,.25)');
         roundRect(bx, by, bw, bh, bh / 2, hit({ x: bx, y: by, w: bw, h: bh }, ptr.x, ptr.y) ? '#ffb08f' : C.coral, C.white, 4);
-        text('📲  Descargar juego', bx + bw / 2, by + bh / 2 + 2, 24, C.white, { stroke: 'rgba(80,30,10,.35)', strokeW: 4 });
+        text('📲  Instalar juego', bx + bw / 2, by + bh / 2 + 2, 24, C.white, { stroke: 'rgba(80,30,10,.35)', strokeW: 4 });
         nextButtons.push({ x: bx, y: by, w: bw, h: bh, cb: installApp });
       }
+      drawToasts();
       if (installHelp) { nextButtons = []; drawInstallHelp(); }
       text('Espacio / Enter para comenzar', W / 2, H - 22, 18, C.white, { weight: 700, stroke: 'rgba(0,0,0,.55)', strokeW: 5, alpha: 0.8 });
     },
@@ -1079,37 +1117,86 @@ function drawCredits() {
 }
 
 // ---------------------------------------------------- instalar (PWA)
-let installPrompt = null, installHelp = false;
+const UA = navigator.userAgent;
+const ENV = {
+  android: /Android/i.test(UA),
+  ios: /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+  inApp: /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|; wv\)|TikTok|Messenger|Snapchat|Twitter/i.test(UA),
+  samsung: /SamsungBrowser/i.test(UA),
+  firefox: /Firefox|FxiOS/i.test(UA),
+};
+const INSTALL_BTN = { x: 20, y: 18, w: 250, h: 56 };
+const HELP_BTN = { x: W / 2 - 170, y: 0, w: 340, h: 62 };   // y se fija al dibujar
+let installPrompt = null, installHelp = false, installDone = false;
 addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });
-addEventListener('appinstalled', () => { installPrompt = null; installHelp = false; });
+addEventListener('appinstalled', () => { installPrompt = null; installHelp = false; installDone = true; toast('¡Listo! El juego quedó en tu pantalla de inicio.', C.good, 4); });
 function isInstalled() {
-  return matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true;
+  return installDone || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true;
+}
+// Se llama directamente desde el toque (pointerdown) para que el navegador permita abrir el instalador.
+function triggerInstall() {
+  if (installPrompt) {
+    const p = installPrompt; installPrompt = null;
+    p.prompt();
+    p.userChoice.then((c) => { if (c.outcome === 'accepted') installHelp = false; }).catch(() => { /* nada */ });
+    return true;
+  }
+  return false;
+}
+function openInChrome() {
+  location.href = `intent://${location.host}${location.pathname}#Intent;scheme=https;package=com.android.chrome;end`;
 }
 function installApp() {
-  if (installPrompt) {
-    installPrompt.prompt();
-    installPrompt.userChoice.finally(() => { installPrompt = null; });
-  } else installHelp = true;
+  if (triggerInstall()) return;
+  installHelp = true;
+  // En pantalla completa el menú del navegador no se ve: se sale para poder usarlo.
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    const ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (ex) Promise.resolve(ex.call(document)).catch(() => { /* nada */ });
+  }
+}
+function helpPrimary() {
+  if (installPrompt) return { label: '📲  Instalar ahora', cb: () => triggerInstall() };
+  if (ENV.android && ENV.inApp) return { label: 'Abrir en Chrome', cb: openInChrome };
+  return { label: 'Entendido', cb: () => { installHelp = false; } };
+}
+function helpSteps() {
+  if (installPrompt) return [['¡Tu dispositivo está listo!', 'Toca «Instalar ahora» y confirma. El juego quedará con su ícono en la pantalla de inicio.']];
+  if (ENV.android && ENV.inApp) return [['Estás dentro de otra app (WhatsApp, Instagram…)', 'Ahí no se pueden instalar juegos. Toca «Abrir en Chrome» y luego vuelve a tocar «Instalar juego».']];
+  if (ENV.ios && ENV.inApp) return [['Estás dentro de otra app', 'Toca ⋯ o el ícono de brújula y elige «Abrir en Safari». Luego sigue los pasos de iPhone.']];
+  if (ENV.ios) return [['iPhone / iPad (Safari)', '1. Toca el botón Compartir (cuadrado con flecha hacia arriba).\n2. Elige «Agregar a inicio» y toca «Agregar».']];
+  if (ENV.samsung) return [['Samsung Internet', '1. Toca el menú ☰ abajo a la derecha.\n2. Elige «Añadir página a» → «Pantalla de inicio».']];
+  if (ENV.android && ENV.firefox) return [['Firefox', '1. Toca el menú ⋮.\n2. Elige «Instalar» o «Agregar a la pantalla de inicio».']];
+  if (ENV.android) return [['Android (Chrome)', '1. Toca el menú ⋮ arriba a la derecha.\n2. Elige «Instalar aplicación» o «Agregar a la pantalla principal».\n3. Confirma con «Instalar».']];
+  return [['Computador (Chrome / Edge)', 'Haz clic en el ícono de instalar ⊕ en la barra de direcciones, o en el menú ⋮ → «Instalar El Vuelo del Gaviotín».'],
+    ['En el celular', 'Abre esta misma página en Chrome (Android) o Safari (iPhone) y toca «Instalar juego».']];
 }
 function drawInstallHelp() {
-  ctx.fillStyle = 'rgba(8,24,36,.7)'; ctx.fillRect(0, 0, W, H);
-  const w = 840, h = 560, x = (W - w) / 2, y = (H - h) / 2;
+  ctx.fillStyle = 'rgba(8,24,36,.75)'; ctx.fillRect(0, 0, W, H);
+  const steps = helpSteps().map(([t, b]) => [t, wrap(b, 740, 24, 600)]);
+  const contentH = steps.reduce((acc, [, bl]) => acc + 66 + bl.length * 32, 0);
+  const w = 860, h = Math.min(H - 40, 300 + contentH), x = (W - w) / 2, y = (H - h) / 2;
   roundRect(x, y, w, h, 32, C.cream, C.sand, 6);
   text('Instala el juego en tu dispositivo', W / 2, y + 58, 38, C.deep);
-  const lines = [
-    ['Android (Chrome)', 'Toca el menú ⋮ y elige «Instalar aplicación» o «Agregar a la pantalla principal».'],
-    ['iPhone / iPad (Safari)', 'Toca el botón Compartir y luego «Agregar a inicio».'],
-    ['Computador (Chrome / Edge)', 'Haz clic en el ícono de instalar en la barra de direcciones.'],
-  ];
-  let yy = y + 118;
-  for (const [title, body] of lines) {
-    text(title, x + 60, yy, 25, C.ochre, { align: 'left' });
-    const bl = wrap(body, w - 120, 22, 600);
-    bl.forEach((l, i) => text(l, x + 60, yy + 32 + i * 28, 22, C.ink, { align: 'left', weight: 600 }));
-    yy += 58 + bl.length * 28;
+  let yy = y + 125;
+  for (const [title] of steps) {
+    text(title, x + 60, yy, 27, C.ochre, { align: 'left' });
+    const bl = steps.find((st) => st[0] === title)[1];
+    bl.forEach((l, i) => text(l, x + 60, yy + 36 + i * 32, 24, C.ink, { align: 'left', weight: 600 }));
+    yy += 66 + bl.length * 32;
   }
-  text('El juego queda con su ícono y se puede jugar sin internet.', W / 2, y + h - 112, 21, C.deep, { weight: 700 });
-  button('Entendido', W / 2 - 120, y + h - 84, 240, 56, () => { installHelp = false; }, { size: 26 });
+  text('Queda con su ícono y se puede jugar sin internet.', W / 2, y + h - 128, 21, C.deep, { weight: 700 });
+  const p = helpPrimary();
+  HELP_BTN.y = y + h - 104;
+  button(p.label, HELP_BTN.x, HELP_BTN.y, HELP_BTN.w, HELP_BTN.h, p.cb, { size: 28 });
+  if (p.label !== 'Entendido') {
+    text('Cerrar', W / 2, y + h - 22, 20, C.deep, { weight: 700 });
+    nextButtons.push({ x: W / 2 - 60, y: y + h - 40, w: 120, h: 36, cb: () => { installHelp = false; } });
+  }
+  if (ENV.android && !installPrompt && !ENV.inApp) {
+    // Flecha hacia el menú del navegador.
+    text('⬆', W - 40, 40 + Math.sin(performance.now() / 200) * 8, 54, C.coral, { stroke: C.white, strokeW: 6 });
+  }
 }
 
 function Victory() {
@@ -1198,7 +1285,14 @@ function step(now) {
   ptr.tap = false;
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && scene && scene.drawWorld && !paused) paused = true;
+  if (document.hidden) {
+    if (scene && scene.drawWorld && !paused) paused = true;
+    music.pauseAll();
+    if (actx && actx.state === 'running') actx.suspend();
+  } else {
+    if (actx && actx.state === 'suspended') actx.resume();
+    music.resume();
+  }
 });
 
 // Gancho de prueba: avanza la simulación N segundos sin depender del reloj del navegador.
