@@ -29,5 +29,11 @@ Cada fase termina con una tarjeta "¿Sabías que…?". Hay 3 vidas por fase, opc
 - `assets/`: arte optimizado (8 MB), generado con `python tools/build_assets.py` desde `../Gaviotin_Arte_Kit/PNG`.
 - `window.__gav.step(segundos)`: gancho de prueba que avanza la simulación sin depender del reloj.
 
+## Audio
+- `assets/audio/music_*.mp3`: música entregada (normalizada a −16 LUFS, sin silencios, sin carátula). Cambia por escena con transición suave; de noche la fase 3 pasa al tema nocturno.
+- `assets/audio/sfx_*.mp3`: 15 efectos generados con ElevenLabs (gaviotín, chapuzones, peces, polluelos, interfaz) y el resto sintetizados con `python tools/synth_sfx.py assets/audio` (gratis, sin servicios externos).
+- `assets/audio/amb_*.mp3` y `*_loop.mp3`: ambientes y loops (viento, bahía, bajo el agua, desierto, motores, pasos, zumbido del foco).
+- Si falta un archivo, el juego usa un sonido sintetizado de respaldo.
+
 ## Créditos
 Arte generado con IA a partir de `gaviotin-prompts-arte.md`. No incluye el logo de la Fundación Gaviotín Chico; para usarlo se necesita el archivo oficial y su autorización.

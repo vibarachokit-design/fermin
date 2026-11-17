@@ -1,4 +1,4 @@
-/* Vuelo del Gaviotín — juego educativo (HTML5 Canvas, sin dependencias) */
+/* El Vuelo del Gaviotín — juego educativo (HTML5 Canvas, sin dependencias) */
 'use strict';
 
 const W = 1280, H = 720;
@@ -38,7 +38,7 @@ const SRC = {
   surf2: 'bg/19_bg_mejillones_water_surface.webp', under2: 'bg/20_bg_mejillones_underwater.webp',
   sky3: 'bg/21_bg_pampa_warm_sky.webp', hor3: 'bg/22_bg_pampa_far_horizon.webp',
   ground3: 'bg/23_bg_pampa_middle_ground.webp', night3: 'bg/24_bg_pampa_night_light_pollution.webp',
-  title: 'screens/25_screen_title.webp', win: 'screens/26_screen_victory.webp', lose: 'screens/27_screen_game_over.webp',
+  cover: 'screens/title_cover.webp', logo: 'ui/logo.png', win: 'screens/26_screen_victory.webp', lose: 'screens/27_screen_game_over.webp',
   flight: 'sprites/tern_flight.png', dive: 'sprites/tern_dive.png', states: 'sprites/tern_states.png',
   air: 'sprites/air.png', desert: 'sprites/desert.png', fish: 'sprites/fish.png', icons: 'sprites/icons.png',
 };
@@ -69,7 +69,7 @@ function loadAll() {
       : rej(new Error('No se pudo cargar ' + src)));
     im.src = 'assets/' + src + (tries < 3 ? `?r=${tries}` : '');
   });
-  return Promise.all(Object.entries(SRC).map(([k, src]) => one(k, src, 3)));
+  return one('logo', SRC.logo, 3).then(() => Promise.all(Object.entries(SRC).filter(([k]) => k !== 'logo').map(([k, src]) => one(k, src, 3))));
 }
 
 // Caja de contenido real (alfa) de cada cuadro, para anclar y colisionar con precisión.
@@ -230,15 +230,54 @@ function handleButtons() {
 }
 
 // ------------------------------------------------------------------ audio
-let actx = null, muted = false;
+// Música: elementos <audio> con transición suave. Efectos y loops: WebAudio con buffers.
+// Si un archivo falta o no carga, se usa el sonido sintetizado de respaldo.
+let actx = null, master = null, muted = false;
 try { muted = localStorage.getItem('gaviotin_mute') === '1'; } catch (_) { /* sin almacenamiento */ }
+const SFX_FILES = ['click', 'card_open', 'pause', 'tern_call', 'wing_flap', 'dive', 'splash', 'splash_out', 'hurt', 'tired',
+  'star', 'fish_catch', 'fish_gold', 'feed_chicks', 'good', 'bad', 'life_lost', 'falcon_warning', 'wind_gust', 'bubbles',
+  'threat_leaves', 'night_fall', 'floodlight_on', 'tool_sign', 'tool_fence', 'tool_detour', 'tool_lamp',
+  'gull', 'sea_lion', 'pelican', 'trash_hit', 'net_tangle', 'falcon_dive', 'dog_sniff', 'nest_alarm'];
+const LOOP_FILES = { truck: 'sfx_truck_loop', atv: 'sfx_atv_loop', steps: 'sfx_footsteps_loop', hum: 'sfx_floodlight_hum',
+  ocean: 'amb_ocean_wind', bay: 'amb_bay', under: 'amb_underwater', desert: 'amb_desert_day', night: 'amb_desert_night' };
+const SFX_VOL = { gull: 0.45, sea_lion: 0.6, click: 0.5, pause: 0.5, card_open: 0.6, bubbles: 0.35, wing_flap: 0.5, tern_call: 0.6, tired: 0.6, splash_out: 0.6 };
+const BUF = {};
+
 function unlockAudio() {
-  if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
-  try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { actx = null; }
+  if (!actx) {
+    try {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(actx.destination);
+    } catch (_) { actx = null; }
+    if (actx) loadAudioBuffers();
+  }
+  if (actx && actx.state === 'suspended') actx.resume();
+  music.resume();
+}
+function loadAudioBuffers() {
+  const all = [...SFX_FILES.map((n) => ['sfx_' + n, 'sfx_' + n]), ...Object.entries(LOOP_FILES)];
+  const get = (file, tries) => fetch(`assets/audio/${file}.mp3`)
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(file))))
+    .catch((e) => (tries > 1 ? new Promise((res) => setTimeout(res, 500)).then(() => get(file, tries - 1)) : Promise.reject(e)));
+  // De a uno (con reintentos) para no saturar servidores locales simples.
+  all.reduce((chain, [key, file]) => chain.then(() => get(file, 5)
+    .then((ab) => actx.decodeAudioData(ab))
+    .then((b) => { BUF[key] = b; })
+    .catch(() => { /* sin archivo: respaldo sintetizado */ })), Promise.resolve());
 }
 function toggleMute() {
   muted = !muted;
   try { localStorage.setItem('gaviotin_mute', muted ? '1' : '0'); } catch (_) { /* nada */ }
+  if (master) master.gain.setTargetAtTime(muted ? 0 : 1, actx.currentTime, 0.05);
+  if (muted) music.pauseAll(); else music.resume();
+}
+function playBuf(key, vol = 1, rate = 1) {
+  const b = BUF[key];
+  if (!b || !actx || actx.state !== 'running') return false;
+  const src = actx.createBufferSource(), g = actx.createGain();
+  src.buffer = b; src.playbackRate.value = rate; g.gain.value = vol;
+  src.connect(g).connect(master); src.start();
+  return true;
 }
 function tone(f0, f1, dur, type = 'sine', vol = 0.15, delay = 0) {
   const t = actx.currentTime + delay;
@@ -249,34 +288,94 @@ function tone(f0, f1, dur, type = 'sine', vol = 0.15, delay = 0) {
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(actx.destination);
+  o.connect(g).connect(master);
   o.start(t); o.stop(t + dur + 0.05);
 }
-function noise(dur, vol = 0.2, freq = 1200) {
+function synthNoise(dur, vol = 0.2, freq = 1200) {
   const len = Math.floor(actx.sampleRate * dur);
   const buf = actx.createBuffer(1, len, actx.sampleRate);
   const ch = buf.getChannelData(0);
   for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
   const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
   src.buffer = buf; f.type = 'lowpass'; f.frequency.value = freq; g.gain.value = vol;
-  src.connect(f).connect(g).connect(actx.destination);
+  src.connect(f).connect(g).connect(master);
   src.start();
 }
-function sfx(kind) {
+// Respaldo sintetizado para cuando no hay archivo.
+const SYNTH = {
+  click: () => tone(660, 880, 0.08, 'triangle', 0.12),
+  star: () => { tone(880, 1320, 0.12, 'triangle', 0.14); tone(1320, 1760, 0.12, 'triangle', 0.1, 0.07); },
+  hurt: () => { tone(300, 90, 0.35, 'sawtooth', 0.14); synthNoise(0.2, 0.15, 900); },
+  dive: () => tone(900, 300, 0.25, 'sine', 0.1),
+  splash: () => synthNoise(0.35, 0.25, 2200),
+  fish_catch: () => { tone(520, 1040, 0.12, 'square', 0.07); tone(780, 1560, 0.15, 'triangle', 0.1, 0.06); },
+  good: () => [523, 659, 784].forEach((f, i) => tone(f, f, 0.16, 'triangle', 0.13, i * 0.08)),
+  bad: () => tone(220, 160, 0.25, 'square', 0.08),
+  tern_call: () => { tone(2200, 3000, 0.07, 'sine', 0.08); tone(2600, 3400, 0.07, 'sine', 0.06, 0.09); },
+};
+function sfx(name, vol) {
   if (muted || !actx || actx.state !== 'running') return;
-  switch (kind) {
-    case 'click': tone(660, 880, 0.08, 'triangle', 0.12); break;
-    case 'star': tone(880, 1320, 0.12, 'triangle', 0.14); tone(1320, 1760, 0.12, 'triangle', 0.1, 0.07); break;
-    case 'hit': tone(300, 90, 0.35, 'sawtooth', 0.14); noise(0.2, 0.15, 900); break;
-    case 'dive': tone(900, 300, 0.25, 'sine', 0.1); break;
-    case 'splash': noise(0.35, 0.25, 2200); break;
-    case 'catch': tone(520, 1040, 0.12, 'square', 0.07); tone(780, 1560, 0.15, 'triangle', 0.1, 0.06); break;
-    case 'good': [523, 659, 784].forEach((f, i) => tone(f, f, 0.16, 'triangle', 0.13, i * 0.08)); break;
-    case 'bad': tone(220, 160, 0.25, 'square', 0.08); break;
-    case 'win': [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.3, 'triangle', 0.14, i * 0.12)); break;
-    case 'chirp': tone(2200, 3000, 0.07, 'sine', 0.08); tone(2600, 3400, 0.07, 'sine', 0.06, 0.09); break;
-  }
+  const v = vol != null ? vol : (SFX_VOL[name] || 0.8);
+  if (playBuf('sfx_' + name, v, 0.96 + Math.random() * 0.08)) return;
+  if (SYNTH[name]) SYNTH[name]();
 }
+
+// Loops continuos (motores, zumbidos, ambientes): cada escena pide su volumen en cada cuadro.
+const loops = {
+  active: {}, want: {},
+  set(name, vol) { this.want[name] = Math.max(this.want[name] || 0, vol); },
+  update() {
+    if (!actx || actx.state !== 'running') { this.want = {}; return; }
+    for (const name of new Set([...Object.keys(this.want), ...Object.keys(this.active)])) {
+      const target = paused ? 0 : (this.want[name] || 0);
+      let l = this.active[name];
+      if (!l && target > 0 && BUF[name]) {
+        const src = actx.createBufferSource(), g = actx.createGain();
+        src.buffer = BUF[name]; src.loop = true; g.gain.value = 0;
+        src.connect(g).connect(master); src.start();
+        l = this.active[name] = { src, g, idle: 0 };
+      }
+      if (!l) continue;
+      l.g.gain.setTargetAtTime(target, actx.currentTime, 0.3);
+      l.idle = target === 0 ? l.idle + 1 : 0;
+      if (l.idle > 120 && !paused) { l.src.stop(); delete this.active[name]; }
+    }
+    this.want = {};
+  },
+};
+
+// Música con transición cruzada.
+const MUSIC_VOL = 0.5;
+const music = {
+  els: {}, current: null,
+  el(name) {
+    if (!this.els[name]) { const a = new Audio(`assets/audio/${name}.mp3`); a.preload = 'auto'; this.els[name] = a; }
+    return this.els[name];
+  },
+  play(name, loop = true) {
+    if (this.current === name) return;
+    this.current = name;
+    if (!name) return;
+    const a = this.el(name);
+    a.loop = loop;
+    try { a.currentTime = 0; } catch (_) { /* aún sin cargar */ }
+    a.volume = 0;
+    if (!muted) a.play().catch(() => { /* espera interacción */ });
+  },
+  pauseAll() { for (const a of Object.values(this.els)) a.pause(); },
+  resume() {
+    if (muted || !this.current) return;
+    const a = this.el(this.current);
+    if (a.paused && !a.ended) a.play().catch(() => { /* espera interacción */ });
+  },
+  update(dt) {
+    for (const [n, a] of Object.entries(this.els)) {
+      const target = n === this.current ? (paused ? MUSIC_VOL * 0.35 : MUSIC_VOL) : 0;
+      a.volume = clamp(a.volume + clamp(target - a.volume, -dt * 0.7, dt * 0.7), 0, 1);
+      if (n !== this.current && a.volume === 0 && !a.paused) a.pause();
+    }
+  },
+};
 
 // --------------------------------------------------------- shared effects
 let particles = [], toasts = [], shake = 0;
@@ -337,14 +436,27 @@ function hud(opts) {
     bar(W / 2 - 170, 52, 340, 20, opts.bar, opts.barColor || C.coral);
     if (opts.barIcon != null) drawSprite('icons', opts.barIcon, W / 2 - 190, 62, 0.3);
   }
-  iconButton(paused ? ICON.play : ICON.pause, W - 150, 16, 58, () => { paused = !paused; });
+  iconButton(paused ? ICON.play : ICON.pause, W - 150, 16, 58, togglePause);
   iconButton(muted ? ICON.mute : ICON.sound, W - 80, 16, 58, toggleMute);
 }
-function loseLife(msg) {
+function togglePause() { paused = !paused; sfx('pause'); }
+function toggleFullscreen() {
+  const el = document.documentElement;
+  if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) Promise.resolve(req.call(el)).then(() => {
+      if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => { /* no soportado */ });
+    }).catch(() => { /* bloqueado */ });
+  } else {
+    const ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (ex) ex.call(document);
+  }
+}
+function loseLife(msg, snd = 'hurt') {
   if (game.lives <= 0) return;
   game.lives--;
   shake = 0.35;
-  sfx('hit');
+  sfx(snd);
   if (msg) toast(msg, '#b5452f');
   if (game.lives <= 0) game.overT = 1.0;
 }
@@ -361,8 +473,10 @@ function Card(o) {
   // o: {title, body, footer, art(cx, cy), backdrop(), next}
   let t = 0;
   return {
+    enter() { sfx('card_open'); if (!o.musicDelay) music.play('music_fact_card'); },
     update(dt) {
       t += dt;
+      if (o.musicDelay && t >= o.musicDelay && music.current !== 'music_fact_card') music.play('music_fact_card');
       if (t > 0.5 && (pressed.Space || pressed.Enter || ptr.tap)) { sfx('click'); o.next(); }
     },
     draw() {
@@ -397,28 +511,36 @@ function Card(o) {
 // ------------------------------------------------------------------ title
 function Title() {
   let t = 0;
+  const PLAY = { x: 452, y: 440, w: 386, h: 105 };
   return {
-    enter() { game.score = 0; game.lives = 3; },
+    enter() { game.score = 0; game.lives = 3; music.play('music_title'); },
     update(dt) {
       t += dt;
       if (handleButtons()) return;
       if (pressed.Space || pressed.Enter) start();
     },
     draw() {
-      ctx.drawImage(IMG.title, 0, 0, W, H);
-      const g = ctx.createLinearGradient(0, 0, 0, 330);
-      g.addColorStop(0, 'rgba(14,76,110,.75)'); g.addColorStop(1, 'rgba(14,76,110,0)');
-      ctx.fillStyle = g; ctx.fillRect(0, 0, W, 330);
-      text('Vuelo del Gaviotín', W / 2, 92 + Math.sin(t * 2) * 4, 92, C.white, { stroke: C.deep, strokeW: 14 });
-      text('Ayuda al Gaviotín Chico a llegar a Mejillones, alimentar a sus polluelos y proteger su nido',
-        W / 2, 172, 25, C.cream, { weight: 700, stroke: 'rgba(14,76,110,.8)', strokeW: 6 });
-      button('¡A volar!', W / 2 - 150, 228, 300, 82, start, { size: 38 });
-      if (game.best) text(`Mejor puntaje: ${game.best}`, W / 2, 342, 22, C.white, { stroke: 'rgba(0,0,0,.5)', strokeW: 5 });
-      text('Espacio / Enter para comenzar', W / 2, H - 28, 20, C.white, { weight: 700, stroke: 'rgba(0,0,0,.5)', strokeW: 5, alpha: 0.85 });
-      iconButton(muted ? ICON.mute : ICON.sound, W - 80, 16, 58, toggleMute);
+      ctx.drawImage(IMG.cover, 0, 0, W, H);
+      // Botón "¡A Volar!" (ya dibujado en la portada): brillo y zona activa.
+      const hover = hit(PLAY, ptr.x, ptr.y);
+      ctx.save();
+      ctx.globalAlpha = hover ? 0.22 : 0.08 + 0.08 * Math.sin(t * 3);
+      roundRect(PLAY.x + 8, PLAY.y + 8, PLAY.w - 16, PLAY.h - 16, 44, '#ffffff');
+      ctx.restore();
+      nextButtons.push({ ...PLAY, cb: start });
+      // Mejor puntaje real sobre la cápsula de la portada.
+      const g = ctx.createLinearGradient(0, 563, 0, 602);
+      g.addColorStop(0, '#02569b'); g.addColorStop(1, '#014c8c');
+      roundRect(704, 564, 96, 38, 10, g);
+      text(':  ' + game.best.toLocaleString('es-CL'), 705, 584, 26, C.white, { align: 'left', weight: 800 });
+      // Sonido y pantalla completa (íconos de la portada).
+      if (muted) { roundRect(1130, 19, 54, 48, 12, '#0b3a6b'); drawSprite('icons', ICON.mute, 1157, 43, 0.36); }
+      nextButtons.push({ x: 1126, y: 15, w: 62, h: 56, cb: toggleMute });
+      nextButtons.push({ x: 1200, y: 15, w: 62, h: 56, cb: toggleFullscreen });
+      text('Espacio / Enter para comenzar', W / 2, H - 22, 18, C.white, { weight: 700, stroke: 'rgba(0,0,0,.55)', strokeW: 5, alpha: 0.8 });
     },
   };
-  function start() { sfx('chirp'); game.score = 0; startPhase(1); }
+  function start() { sfx('tern_call'); game.score = 0; startPhase(1); }
 }
 
 // ----------------------------------------------------------- phase flow
@@ -440,8 +562,8 @@ function startPhase(n) {
   setScene(Card({ ...INTRO[n], backdrop: () => p.drawWorld(), next: () => setScene(p) }));
 }
 function completePhase(world, fact, next) {
-  sfx('win');
-  setScene(Card({ ...fact, backdrop: () => world.drawWorld(), next }));
+  music.play('music_phase_clear', false);
+  setScene(Card({ ...fact, musicDelay: 5.5, backdrop: () => world.drawWorld(), next }));
 }
 
 // ------------------------------------------------- phase 1: migration
@@ -457,10 +579,12 @@ function Phase1() {
     for (const k in timers) timers[k] -= dt;
     if (timers.gull <= 0) {
       ents.push({ type: 'gull', x: W + 140, y: rand(90, 500), vx: -(speed + rand(60, 200)), ph: rand(0, 6) });
+      if (Math.random() < 0.35) setTimeout(() => sfx('gull', 0.3), 600);
       timers.gull = rand(1.6, 2.6) - d * 0.9;
     }
     if (timers.falcon <= 0 && t > 6) {
       ents.push({ type: 'warn', y: clamp(pl.y, 100, 520), life: 1.0 });
+      sfx('falcon_warning');
       timers.falcon = rand(5.5, 8) - d * 2.5;
     }
     if (timers.wind <= 0) {
@@ -476,11 +600,13 @@ function Phase1() {
   const body = () => ({ x: pl.x - 38, y: pl.y - 14, w: 78, h: 30 });
 
   return {
+    enter() { music.play('music_phase1_migration'); },
     update(dt) {
       if (handleButtons()) return;
-      if (pressed.Escape || pressed.KeyP) { paused = !paused; return; }
+      if (pressed.Escape || pressed.KeyP) { togglePause(); return; }
       if (paused) return;
       t += dt; dist += speed * dt;
+      loops.set('ocean', 0.35);
       pl.inv = Math.max(0, pl.inv - dt); pl.hurt = Math.max(0, pl.hurt - dt);
       if (!done) {
         let dx = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
@@ -503,7 +629,7 @@ function Phase1() {
         }, () => startPhase(2));
       }
       for (const e of ents) {
-        if (e.type === 'warn') { e.life -= dt; if (e.life <= 0) { e.dead = true; ents.push({ type: 'falcon', x: W + 140, y: e.y, vx: -(speed + 560), vy: 0 }); } continue; }
+        if (e.type === 'warn') { e.life -= dt; if (e.life <= 0) { e.dead = true; ents.push({ type: 'falcon', x: W + 140, y: e.y, vx: -(speed + 560), vy: 0 }); sfx('falcon_dive', 0.7); } continue; }
         e.x += e.vx * dt;
         if (e.type === 'gull') e.y += Math.sin(t * 3 + e.ph) * 40 * dt;
         if (e.type === 'falcon') e.y += clamp(pl.y - e.y, -1, 1) * 60 * dt;
@@ -514,11 +640,12 @@ function Phase1() {
           e.dead = true; game.score += 50; sfx('star'); burst(e.x, e.y, 10, '#ffd34d', 160, 0.5, 5, 0);
         } else if (e.type === 'wind' && overlap(b, { x: e.x - 90, y: e.y - 40, w: 180, h: 80 })) {
           pl.push = e.push;
-          if (!e.felt) { e.felt = true; toast(e.push < 0 ? 'Una ráfaga te eleva' : 'Una ráfaga te empuja hacia abajo', C.teal, 1.4); }
+          if (!e.felt) { e.felt = true; sfx('wind_gust'); toast(e.push < 0 ? 'Una ráfaga te eleva' : 'Una ráfaga te empuja hacia abajo', C.teal, 1.4); }
         } else if ((e.type === 'gull' || e.type === 'falcon') && pl.inv <= 0) {
           const idx = e.type === 'gull' ? 0 : 4;
           if (overlap(b, spriteRect('air', idx, e.x, e.y, 0.5, 'center', 0.5))) {
             pl.inv = 1.8; pl.hurt = 0.7; burst(pl.x, pl.y, 14, '#ffffff', 220, 0.6, 6, 200);
+            sfx(e.type === 'gull' ? 'gull' : 'falcon_dive', 0.6);
             loseLife(e.type === 'gull' ? '¡Choque con una gaviota dominicana!' : '¡Un halcón peregrino te sorprendió!');
           }
         }
@@ -582,16 +709,20 @@ function Phase2() {
     }
     if (timers.net <= 0) { ents.push({ type: 'net', x: W + 160, y: rand(WY + 140, 600), vx: -60 }); timers.net = rand(14, 20); }
     if (timers.pelican <= 0) { ents.push({ type: 'pelican', x: W + 120, y: WY + 22, vx: -rand(50, 80) }); timers.pelican = rand(9, 14); }
-    if (timers.lion <= 0) { ents.push({ type: 'lion', x: rand(200, W - 200), y: WY + 30, life: 4, max: 4 }); timers.lion = rand(9, 13); }
+    if (timers.lion <= 0) { ents.push({ type: 'lion', x: rand(200, W - 200), y: WY + 30, life: 4, max: 4 }); timers.lion = rand(9, 13); setTimeout(() => sfx('sea_lion'), 300); }
   }
   const beak = () => ({ x: pl.x - 30, y: pl.y - 30, w: 60, h: 70 });
 
+  let tiredWarned = false;
   return {
+    enter() { music.play('music_phase2_fishing'); },
     update(dt) {
       if (handleButtons()) return;
-      if (pressed.Escape || pressed.KeyP) { paused = !paused; return; }
+      if (pressed.Escape || pressed.KeyP) { togglePause(); return; }
       if (paused) return;
       t += dt;
+      loops.set(pl.y > WY ? 'under' : 'bay', 0.4);
+      if (pl.y > WY && Math.random() < dt * 0.8) sfx('bubbles');
       pl.inv = Math.max(0, pl.inv - dt); pl.hurt = Math.max(0, pl.hurt - dt); pl.catchT = Math.max(0, pl.catchT - dt);
       const touchWater = ptr.down && ptr.y > WY;
       const diveHeld = keys.Space || keys.ArrowDown || keys.KeyS || touchWater;
@@ -604,6 +735,8 @@ function Phase2() {
       if (!done) {
         spawn(dt);
         energy -= dt * 3.2;
+        if (energy < 25 && !tiredWarned) { tiredWarned = true; sfx('tired'); }
+        if (energy > 40) tiredWarned = false;
         if (energy <= 0) { energy = 60; pl.inv = 1.5; loseLife('¡Sin energía! Atrapa peces para recuperarla.'); }
       }
       if (pl.state === 'fly') {
@@ -616,12 +749,12 @@ function Phase2() {
         if ((!diveHeld && pl.y > WY + 50) || pl.y > 680) pl.state = 'rise';
       } else if (pl.state === 'rise') {
         pl.y -= 560 * dt;
-        if (splashed && pl.y < WY) { splashed = false; burst(pl.x, WY, 14, '#bfefff', 240, 0.7, 5, 700); }
+        if (splashed && pl.y < WY) { splashed = false; sfx('splash_out'); burst(pl.x, WY, 14, '#bfefff', 240, 0.7, 5, 700); }
         if (pl.y <= CRUISE) {
           pl.y = CRUISE; pl.state = 'fly';
           if (pl.carry) {
             caught += pl.carry.val; energy = Math.min(100, energy + pl.carry.en); game.score += pl.carry.pts;
-            sfx('good'); burst(pl.x, pl.y, 16, '#ffd34d', 200, 0.6, 5, 100);
+            sfx('feed_chicks'); burst(pl.x, pl.y, 16, '#ffd34d', 200, 0.6, 5, 100);
             if (pl.carry.val > 1) toast('¡Pez dorado! Vale doble.', '#c98b1f', 1.8);
             pl.carry = null;
             if (caught >= GOAL && !done) { done = true; toast('¡Los polluelos están alimentados!', C.teal); }
@@ -646,18 +779,19 @@ function Phase2() {
         const under = pl.y > WY + 10 && (pl.state === 'dive' || pl.state === 'rise');
         const b = beak();
         if (e.type === 'fish' && under && !pl.carry && overlap(b, spriteRect('fish', e.def.row * 3, e.x, e.y, 0.5, 'center', 0.8))) {
-          e.dead = true; pl.carry = e.def; pl.state = 'rise'; pl.catchT = 0.25; sfx('catch');
+          e.dead = true; pl.carry = e.def; pl.state = 'rise'; pl.catchT = 0.25; sfx(e.def.val > 1 ? 'fish_gold' : 'fish_catch');
           burst(e.x, e.y, 10, '#d9f6ff', 140, 0.5, 4, -60);
         } else if (pl.inv <= 0 && under) {
           let r = null, msg = '';
           if (e.type === 'trash') { r = itemRect(e.name, e.x, e.y, 0.22, 'center', 0.7); msg = '¡Eso es basura! El plástico daña a las aves marinas.'; }
           if (e.type === 'net') { r = itemRect('sea_net', e.x, e.y, 0.55, 'center', 0.7); msg = '¡Cuidado con las redes abandonadas!'; }
-          if (r && overlap(b, r)) { e.dead = e.type === 'trash'; pl.inv = 1.6; pl.hurt = 0.6; pl.carry = null; pl.state = 'rise'; loseLife(msg); }
+          if (r && overlap(b, r)) { e.dead = e.type === 'trash'; pl.inv = 1.6; pl.hurt = 0.6; pl.carry = null; pl.state = 'rise'; sfx(e.type === 'trash' ? 'trash_hit' : 'net_tangle'); loseLife(msg); }
         }
         if (pl.inv <= 0 && (e.type === 'pelican' || e.type === 'lion') && Math.abs(pl.y - WY) < 50 && pl.state !== 'fly') {
           const w = e.type === 'pelican' ? 80 : 60;
           if (Math.abs(pl.x - e.x) < w && (e.type !== 'lion' || e.life < e.max - 0.4)) {
             pl.inv = 1.6; pl.hurt = 0.6; pl.carry = null; pl.state = 'rise';
+            sfx(e.type === 'pelican' ? 'pelican' : 'sea_lion');
             loseLife(e.type === 'pelican' ? '¡Un pelícano te quitó el pez!' : '¡Un lobo marino asomó justo ahí!');
           }
         }
@@ -751,8 +885,11 @@ function Phase3() {
     if (t > NIGHT) pool.push('lamp', 'lamp');
     const type = pick(pool), d = TYPES[type];
     const y = rand(390, 660);
-    if (type === 'lamp') ents.push({ type, d, x: rand(560, 1120), y, timer: 8, max: 8, ph: rand(0, 4) });
-    else ents.push({ type, d, x: W + 140, y, ph: rand(0, 4), state: 'come' });
+    if (type === 'lamp') { ents.push({ type, d, x: rand(560, 1120), y, timer: 8, max: 8, ph: rand(0, 4) }); sfx('floodlight_on', 0.5); }
+    else {
+      ents.push({ type, d, x: W + 140, y, ph: rand(0, 4), state: 'come' });
+      if (type === 'dog') setTimeout(() => sfx('dog_sniff', 0.55), 1500);
+    }
     spawnT = Math.max(1.8, 3.4 - t * 0.03) + rand(-0.3, 0.5);
   }
   const persp = (y) => 0.72 + 0.5 * (y - 390) / 270;
@@ -764,7 +901,8 @@ function Phase3() {
     const tool = TOOLS[toolIdx];
     if (!e) { sfx('bad'); toast('No hay amenazas por ahora.', C.teal, 1.2); return; }
     if (e.d.tool !== tool.id) { sfx('bad'); toast(`${tool.art} no sirve para ${e.d.label}.`, '#b5452f', 1.6); return; }
-    sfx('good');
+    sfx('tool_' + tool.id); sfx('good', 0.45);
+    if (e.type !== 'lamp') setTimeout(() => sfx('threat_leaves', 0.5), 250);
     saved++;
     const bonus = e.type === 'lamp' ? Math.round(e.timer * 10) : Math.round(clamp((e.x - NEST.x) / 4, 0, 150));
     game.score += 100 + bonus;
@@ -784,14 +922,23 @@ function Phase3() {
   const toolBox = (i) => ({ x: W / 2 - 250 + i * 128, y: H - 128, w: 116, h: 116 });
 
   return {
+    enter() { music.play('music_phase3_day'); },
     update(dt) {
       if (handleButtons()) return;
-      if (pressed.Escape || pressed.KeyP) { paused = !paused; return; }
+      if (pressed.Escape || pressed.KeyP) { togglePause(); return; }
       if (paused) return;
       t += dt;
+      loops.set(t > NIGHT ? 'night' : 'desert', 0.4);
+      for (const e of ents) {
+        const near = clamp(1 - Math.abs(e.x - W / 2) / 900, 0.25, 1);
+        if (e.type === 'truck' && e.state !== undefined) loops.set('truck', 0.35 * near);
+        if (e.type === 'atv') loops.set('atv', 0.3 * near);
+        if (e.type === 'person') loops.set('steps', 0.35 * near);
+        if (e.type === 'lamp' && !e.state) loops.set('hum', 0.12);
+      }
       if (!done) {
         spawn(dt);
-        if (t > NIGHT && !nightToastShown) { nightToastShown = true; toast('Cae la noche… ¡atento a los focos de luz!', '#33356b', 2.6); }
+        if (t > NIGHT && !nightToastShown) { nightToastShown = true; music.play('music_phase3_night'); sfx('night_fall', 0.7); toast('Cae la noche… ¡atento a los focos de luz!', '#33356b', 2.6); }
         TOOLS.forEach((tool, i) => {
           if (pressed[tool.key] || pressed['Numpad' + (i + 1)]) {
             sel = i;
@@ -825,13 +972,13 @@ function Phase3() {
         if (e.type === 'lamp') {
           if (e.state === 'fixed') { e.fixT -= dt; if (e.fixT <= 0) e.dead = true; continue; }
           e.timer -= dt;
-          if (e.timer <= 0 && !done) { e.dead = true; loseLife('La luz intensa espantó a los gaviotines del nido.'); }
+          if (e.timer <= 0 && !done) { e.dead = true; loseLife('La luz intensa espantó a los gaviotines del nido.', 'nest_alarm'); }
           continue;
         }
         const v = e.d.v * persp(e.y);
         if (e.state === 'come') {
           e.x -= v * dt;
-          if (e.x < NEST.x + 150 && !done) { e.state = 'leave'; loseLife(`¡${e.d.label[0].toUpperCase() + e.d.label.slice(1)} llegó al nido!`); }
+          if (e.x < NEST.x + 150 && !done) { e.state = 'leave'; loseLife(`¡${e.d.label[0].toUpperCase() + e.d.label.slice(1)} llegó al nido!`, 'nest_alarm'); }
         } else { e.x += v * 1.8 * dt; if (e.x > W + 200) e.dead = true; }
       }
       ents = ents.filter((e) => !e.dead);
@@ -902,7 +1049,7 @@ function saveBest() {
 function Victory() {
   let t = 0, record = false;
   return {
-    enter() { record = saveBest(); sfx('win'); },
+    enter() { record = saveBest(); music.play('music_victory', false); sfx('feed_chicks', 0.6); },
     update(dt) { t += dt; handleButtons(); if (t > 1 && (pressed.Space || pressed.Enter)) setScene(Title()); if (Math.random() < dt * 3) burst(rand(100, W - 100), rand(80, 300), 12, pick(['#ffd34d', C.coral, '#7fe0ff', '#ffffff']), 180, 1.2, 5, 120); updateParticles(dt); },
     draw() {
       ctx.drawImage(IMG.win, 0, 0, W, H);
@@ -920,7 +1067,7 @@ function Victory() {
 function GameOver() {
   let t = 0;
   return {
-    enter() { saveBest(); },
+    enter() { saveBest(); music.play('music_game_over', false); },
     update(dt) {
       t += dt;
       if (handleButtons()) return;
@@ -945,11 +1092,14 @@ function Loading(err) {
   return {
     update() {},
     draw() {
-      ctx.fillStyle = C.deep; ctx.fillRect(0, 0, W, H);
-      text('Vuelo del Gaviotín', W / 2, H / 2 - 60, 56, C.white);
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, '#5bbcf0'); g.addColorStop(1, '#e6f6ff');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      if (IMG.logo) { const lw = 620, lh = lw * IMG.logo.height / IMG.logo.width; ctx.drawImage(IMG.logo, W / 2 - lw / 2, H / 2 - lh - 10, lw, lh); }
+      else text('El Vuelo del Gaviotín', W / 2, H / 2 - 60, 56, C.white);
       if (err) { text(err, W / 2, H / 2 + 20, 24, C.coral); return; }
       bar(W / 2 - 220, H / 2 + 10, 440, 22, loaded / total, C.coral);
-      text('Cargando…', W / 2, H / 2 + 70, 22, C.sand, { weight: 600 });
+      text('Cargando…', W / 2, H / 2 + 70, 24, C.deep, { weight: 700 });
     },
   };
 }
@@ -967,6 +1117,8 @@ function step(now) {
   if (scene) {
     scene.update(dt);
     tickGameOver(dt);
+    music.update(dt);
+    loops.update();
     if (!paused) { updateParticles(dt); updateToasts(dt); }
     shake = Math.max(0, shake - dt);
   }
