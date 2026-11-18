@@ -1,5 +1,5 @@
 /* Service worker de El Vuelo del Gaviotín (generado por tools/build_pwa.py; no editar a mano). */
-const VERSION = '0c1f285dd06d';
+const VERSION = 'ce25f93353b4';
 const CACHE = 'gaviotin-' + VERSION;
 const CORE = [
 "./",
@@ -114,7 +114,8 @@ const ALL = [
 "assets/bg/22_bg_pampa_far_horizon.webp",
 "assets/bg/23_bg_pampa_middle_ground.webp",
 "assets/bg/24_bg_pampa_night_light_pollution.webp",
-"assets/items.json"
+"assets/items.json",
+"og-image.jpg"
 ];
 
 self.addEventListener('install', (e) => {
